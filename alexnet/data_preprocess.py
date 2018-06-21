@@ -1,11 +1,27 @@
-# import tensorflow as tf
+import tensorflow as tf
 from imageio import imwrite
 import numpy as np
 import pickle
+import os
+from skimage import transform
 
 DATA_DIR = 'cifar-10-batches-py'
-import os
-os.listdir(DATA_DIR)
+CROP_H, CROP_W = 24, 24
+
+class Dataset(object):
+    def __init__(self, X, y, batch_size, shuffle=False):
+        assert X.shape[0] == y.shape[0], 'Got different numbers of data and labels'
+        self.X, self.y = X, y
+        self.batch_size, self.shuffle = batch_size, shuffle
+
+    def __iter__(self):
+        N, B = self.X.shape[0], self.batch_size
+        idxs = np.arange(N)
+        if self.shuffle:
+            np.random.shuffle(idxs)
+        return iter((self.X[i:i+B], self.y[i:i+B]) for i in range(0, N, B))
+
+
 def unpickle(file):
     with open(file, 'rb') as fo:
         dict = pickle.load(fo, encoding='bytes')
@@ -33,14 +49,6 @@ def vec_to_mat3d(vec, image_shape=(32, 32, 3)):
     else:
         raise TypeError('type is {}'.format(type(vec)))
 
-def test():
-    raw_pics = unpickle('{}/test_batch'.format(DATA_DIR))
-    arr = raw_pics[b'data'][100]
-    # img = np.zeros(32,32,3)
-    print(arr.shape)
-    img = vec_to_mat3d(arr)
-    imwrite('img.png', img)
-
 def load_data(train=True, raw=False):
     if train:
         data_path = ['{}/data_batch_{}'.format(DATA_DIR, i) for i in range(1,6)]
@@ -64,6 +72,33 @@ def load_data(train=True, raw=False):
     labels = np.array(labels)
     return data, labels
 
+def prepare_dataset(images, labels, train, **kwargs):
+    augment = kwargs.get('augment', False)
+    need_resize = kwargs.get('resize', False)
+    batch_size = kwargs.get('batch_size', 64)
+    num_training = kwargs.get('num_training', 49000)
+    num_validation = kwargs.get('num_validation', 1000)
+    num_test = kwargs.get('num_test', 10000)
+
+    if augment:
+        images = image_augmentation(images)
+
+    if train:
+        mask = range(num_training, num_training + num_validation)
+        X_val = images[mask]
+        y_val = labels[mask]
+        mask = range(num_training)
+        X_train = images[mask]
+        y_train = labels[mask]
+        train_dset = Dataset(X_train, y_train, batch_size=batch_size, shuffle=True)
+        val_dset = Dataset(X_val, y_val, batch_size=batch_size, shuffle=False)
+        return train_dset, val_dset
+    else:
+        if need_resize:
+            images = resize(images)
+        test_dset = Dataset(images, labels, batch_size=batch_size)
+        return test_dset
+
 def test_load_data():
     data, labels = load_data()
     print(data.shape)
@@ -72,3 +107,20 @@ def test_load_data():
     for i in range(len(data)):
         imwrite('test/img_{}_{}.png'.format(i, meta[labels[i]].decode('utf8')), data[i])
 
+def resize(images):
+    images_resize = np.zeros((images.shape[0], CROP_H, CROP_W, 3))
+    for i in range(images.shape[0]):
+        images_resize[i, :, :, :] = transform.resize(images[i, :, :, :], (CROP_H, CROP_W))
+    return images_resize
+
+def random_crop(image):
+    x = np.random.randint(0, image.shape[1] - CROP_W)
+    y = np.random.randint(0, image.shape[0] - CROP_H)
+    return image[y:y+CROP_H, x:x+CROP_W, :]
+    
+def image_augmentation(images):
+    augmented = np.zeros((images.shape[0], CROP_H, CROP_W, 3))
+    for i in range(images.shape[0]):
+        augmented[i, :, :, :] = np.fliplr(random_crop(images[i, :, :, :]))
+
+    return augmented
