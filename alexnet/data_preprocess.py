@@ -70,6 +70,7 @@ def load_data(train=True, raw=False):
     else:
         data = vec_to_mat3d(raw_data)
     labels = np.array(labels)
+    data.astype(np.float32)
     return data, labels
 
 def prepare_dataset(images, labels, train, **kwargs):
