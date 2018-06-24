@@ -37,7 +37,7 @@ def build_model(X, Y, lr, global_step, **kwargs):
     # update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     # with tf.control_dependencies(update_ops):
     #     train_op = optim.minimize(loss_op)
-
+    
     return logits_op, loss_op, acc_op, train_op
 
 
@@ -58,7 +58,7 @@ def train(args):
     # images, labels = load_data(False)
     # test_dset = prepare_dataset(images, labels, False)
 
-    learning_rate = (10+1*np.random.random(10))*1e-5 ,
+    learning_rate = (10+1*np.random.random(10))*1e-5
     # learning_rate = [9.025036551142157e-05]
 
     for lr in learning_rate:
