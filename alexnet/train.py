@@ -50,17 +50,14 @@ def rm_dir(path):
             print('Error: {} - {}.'.format(e.filename, e.strerror))
 
 def train(args):
-    if args.eval:
-        args.resume = True
-
     images, labels = load_data(True)
     train_dset, val_dset = prepare_dataset(images, labels, True, augment=args.augment)
     # images, labels = load_data(False)
     # test_dset = prepare_dataset(images, labels, False)
 
-    learning_rate = (10+1*np.random.random(10))*1e-5
-    # learning_rate = [9.025036551142157e-05]
-
+    # learning_rate = (1 + 11*np.random.random(10)) * 1e-5
+    # learning_rate = [7.453742807604199e-05] # augment
+    learning_rate = [0.00021837457574664458] # no augment
     for lr in learning_rate:
         tf.reset_default_graph()
         graph = tf.Graph()
@@ -76,8 +73,8 @@ def train(args):
             logits_op, loss_op, acc_op, train_op = build_model(X, Y, lr, global_step, lrn=args.lrn, full_model=args.full_model)                                 
 
             # add variables to summary
-            log_dir = os.path.join(args.log_dir, 'lr-{:.8f}'.format(lr))
-            if not args.resume:
+            log_dir = os.path.join(args.log_dir, 'lr-{:.8f}'.format(lr), '')
+            if not args.eval:
                 rm_dir(log_dir)
 
             tf.summary.scalar('loss', loss_op)
@@ -87,16 +84,17 @@ def train(args):
             summary_writer = tf.summary.FileWriter(log_dir, graph)
 
             # model saver
-            save_dir = os.path.join(args.save_dir, 'lr-{:.8f}'.format(lr))  
+            save_dir = os.path.join(args.save_dir, 'lr-{:.8f}'.format(lr), '') if not args.eval else args.save_dir
+            print('save at {}'.format(save_dir))
             saver = tf.train.Saver(filename=save_dir)
 
             # run training session
             config = tf.ConfigProto(log_device_placement=False)
             with tf.Session(graph=graph, config=config) as sess:
                 sess.run(tf.global_variables_initializer())
-                if args.resume:
+                if args.eval:
                     print('Resume from {}'.format(args.save_dir))
-                    saver.restore(sess, tf.train.latest_checkpoint('model'))
+                    saver.restore(sess, tf.train.latest_checkpoint(save_dir))
                 step = sess.run(global_step)
                 print('lr={}, normalization: {}, initializer:{}, step: {}'.format(lr, args.lrn, args.init, step)) 
                 
@@ -114,10 +112,10 @@ def train(args):
                     print('step:{}, val acc: {:.2%} ({}/{})'.format(step, acc, num_correct, num_samples))
                 else:
                     images, labels = load_data(False)
-                    test_dset = prepare_dataset(images, labels, train=False, resize=args.resize)
+                    test_dset = prepare_dataset(images, labels, train=False, augment=args.augment)
                     acc, num_correct, num_samples = check_accuracy(sess, test_dset, X, logits_op)
                     step = sess.run(global_step)
-                    print('step:{}, val acc: {:.2%} ({}/{})'.format(step, acc, num_correct, num_samples))
+                    print('step:{}, test acc: {:.2%} ({}/{})'.format(step, acc, num_correct, num_samples))
             # with end here
 
 '''

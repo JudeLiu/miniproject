@@ -75,13 +75,11 @@ def load_data(train=True, raw=False):
 
 def prepare_dataset(images, labels, train, **kwargs):
     augment = kwargs.get('augment', False)
-    need_resize = kwargs.get('resize', False)
     batch_size = kwargs.get('batch_size', 64)
     num_training = kwargs.get('num_training', 49000)
     num_validation = kwargs.get('num_validation', 1000)
-    num_test = kwargs.get('num_test', 10000)
 
-    if augment:
+    if augment and train:
         images = image_augmentation(images)
 
     if train:
@@ -95,7 +93,8 @@ def prepare_dataset(images, labels, train, **kwargs):
         val_dset = Dataset(X_val, y_val, batch_size=batch_size, shuffle=False)
         return train_dset, val_dset
     else:
-        if need_resize:
+        if augment:
+            # images = image_augmentation(images)
             images = resize(images)
         test_dset = Dataset(images, labels, batch_size=batch_size)
         return test_dset
