@@ -1,3 +1,4 @@
-cifar-10-python*
+cifar-10-*
 alexnet/cifar-10-batches-py
 */__pycache__
+plan/
