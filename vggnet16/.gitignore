@@ -1,0 +1,4 @@
+tensorflow-vgg-master/
+test_data/
+wrong/
+*.npy
