@@ -3,56 +3,94 @@ import tensorflow as tf
 import numpy as np
 from functools import reduce
 
-VGG_MEAN = [103.939, 116.779, 123.68]
-CIFAR_MEAN = [125.30691805, 122.95039414, 113.86538318]
+# VGG_MEAN = [103.939, 116.779, 123.68]
+VGG_MEAN = [125.30691805, 122.95039414, 113.86538318] # cifar mean
 
 class VGG16(object):
     """
     A trainable version vgg16.
     """
 
-    def __init__(self, vgg16_npy_path=None, trainable=True, dropout=0.5, num_classes=10, fc_feat_size=4096):
+    def __init__(self, global_step=None, vgg16_npy_path=None, trainable=True, dropout=0.5, num_classes=10, fc_feat_size=4096):
         if vgg16_npy_path is not None:
             self.data_dict = np.load(vgg16_npy_path, encoding='latin1').item()
+            if  vgg16_npy_path == 'vgg16.npy':
+                self.raw_model = True
+            else:
+                self.raw_model = False
         else:
             self.data_dict = None
+            self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
+        if global_step is not None:
+            if isinstance(global_step, int):
+                self.global_step = tf.Variable(global_step, name='global_step', trainable=False)
+            elif isinstance(global_step, tf.Variable):
+                self.global_step = global_step
+            else:
+                raise TypeError('type of global_step {}'.format(type(global_step)))
+        else:
+            if self.data_dict is None or 'global_step' not in self.data_dict:
+                self.global_step = tf.Variable(0, name='global_step', trainable=False)
+            else:
+                self.global_step = tf.Variable(self.data_dict['global_step'][0], name='global_step', trainable=False)
+
+        # if mean_image is None:
+        #     if 'mean_image' not in self.data_dict:
+        #         raise ReferenceError('None mean image provide')
+        #     else:
+        #         self.mean_image = tf.Variable(self.data_dict['mean_image'][0], name='mean_image', trainable=False)
+        #         # self.mean_image = self.data_dict['mean_image'][0]
+        # else:
+        #     self.mean_image = tf.Variable(mean_image, name='mean_image', trainable=False)
+        #     # self.mean_image = mean_image
+    
         self.var_dict = {}
         self.trainable = trainable
         self.dropout = dropout
         self.fc_feat_size = fc_feat_size
         self.num_classes = num_classes
+        self.var_dict[('global_step', 0)] = self.global_step
+        # self.var_dict[('mean_image', 0)] = self.mean_image
+        self.activation = tf.nn.leaky_relu
 
-    def preprocess_inputs(self, rgb):
+    def preprocess_inputs(self, rgb, image_size):
         """
         preprocess input images
 
         :param rgb: rgb image [batch, height, width, 3] values scaled [0, 1]
         """
         rgb_scaled = rgb
-        image_size = [32, 32]
-        # image_size = [224, 224]
         # Convert RGB to BGR
         red, green, blue = tf.split(axis=3, num_or_size_splits=3, value=rgb_scaled)
         assert red.get_shape().as_list()[1:] == [*image_size, 1]
         assert green.get_shape().as_list()[1:] == [*image_size, 1]
         assert blue.get_shape().as_list()[1:] == [*image_size, 1]
-        bgr = tf.concat(axis=3, values=[
-            blue - VGG_MEAN[0],
-            green - VGG_MEAN[1],
-            red - VGG_MEAN[2],
-        ])
+        # bgr = tf.concat(axis=3, values=[
+        #     blue - VGG_MEAN[0],
+        #     green - VGG_MEAN[1],
+        #     red - VGG_MEAN[2],
+        # ])
+        # assert len(self.mean_image.shape) == 3
+        # mean_red, mean_green, mean_blue = np.split(self.mean_image, 3, axis=2)
+        # mean_red, mean_green, mean_blue = tf.split(axis=2, num_or_size_splits=3, value=self.mean_image)
+        bgr = tf.concat(axis=3, values=[blue, green, red])
+        # bgr = tf.concat(axis=3, values=[
+        #     blue - mean_blue,
+        #     green - mean_green,
+        #     red - mean_red,
+        # ])
         assert bgr.get_shape().as_list()[1:] == [*image_size, 3]
         return bgr
 
-    def build(self, rgb, train_mode=None):
+    def build(self, rgb, image_size=(32, 32), train_mode=None):
         """
         load variable from npy to build the VGG
 
         :param train_mode: a bool tensor, usually a placeholder: if True, dropout will be turned on
         """
         print('train mode ', train_mode)
-        bgr = self.preprocess_inputs(rgb)
+        bgr = self.preprocess_inputs(rgb, image_size)
 
         self.conv1_1 = self.conv_layer(bgr, 3, 64, "conv1_1")
         self.conv1_2 = self.conv_layer(self.conv1_1, 64, 64, "conv1_2")
@@ -78,9 +116,9 @@ class VGG16(object):
         self.pool5 = self.max_pool(self.conv5_3, 'pool5')
 
         # self.fc6 = self.fc_layer(self.pool5, 25088, 4096, "fc6")  # 25088 = ((224 // (2 ** 5)) ** 2) * 512
-        get_fc_layer = self.fc_layer
+        get_fc_layer = self.fc_layer if not self.raw_model else self.fc_layer_from_scratch
         self.fc6 = get_fc_layer(self.pool5, 512, self.fc_feat_size, 'fc6')
-        self.relu6 = tf.nn.relu(self.fc6)
+        self.relu6 = self.activation(self.fc6)
         if train_mode is not None:
             self.relu6 = tf.cond(train_mode, lambda: tf.nn.dropout(self.relu6, self.dropout), lambda: self.relu6)
         elif self.trainable:
@@ -88,7 +126,7 @@ class VGG16(object):
 
         # self.fc7 = self.fc_layer(self.relu6, 4096, 4096, "fc7")
         self.fc7 = get_fc_layer(self.relu6, self.fc_feat_size, self.fc_feat_size, 'fc7')
-        self.relu7 = tf.nn.relu(self.fc7)
+        self.relu7 = self.activation(self.fc7)
         if train_mode is not None:
             self.relu7 = tf.cond(train_mode, lambda: tf.nn.dropout(self.relu7, self.dropout), lambda: self.relu7)
         elif self.trainable:
@@ -112,7 +150,7 @@ class VGG16(object):
 
             conv = tf.nn.conv2d(bottom, filt, [1, 1, 1, 1], padding='SAME')
             bias = tf.nn.bias_add(conv, conv_biases)
-            relu = tf.nn.relu(bias)
+            relu = self.activation(bias)
 
             return relu
 
@@ -196,6 +234,8 @@ class VGG16(object):
 
         for (name, idx), var in list(self.var_dict.items()):
             var_out = sess.run(var)
+            if name == 'global_step':
+                print(var_out)
             if name not in data_dict:
                 data_dict[name] = {}
             data_dict[name][idx] = var_out
@@ -212,23 +252,17 @@ class VGG16(object):
 
 
 class VGG16OneFC(VGG16):
-    def __init__(self, vgg16_npy_path, **kwargs):
-        trainable = kwargs.get('trainable', True)
-        num_classes = kwargs.get('num_classes', 10)
-        super(VGG16OneFC, self).__init__(
-            trainable=trainable,
-            num_classes=num_classes,
-            vgg16_npy_path=vgg16_npy_path)
+    def __init__(self, **kwargs):
+        super(VGG16OneFC, self).__init__(**kwargs)
         print('data dict is none? {}'.format('none' if self.data_dict is None else 'not none'))
 
-    def build(self, rgb, train_mode=None):
+    def build(self, rgb, image_size, train_mode=None):
         """
         load variable from npy to build the VGG
 
         :param train_mode: a bool tensor, usually a placeholder: if True, dropout will be turned on
         """
-        print('train mode ', train_mode)
-        bgr = self.preprocess_inputs(rgb)
+        bgr = self.preprocess_inputs(rgb, image_size)
 
         self.conv1_1 = self.conv_layer(bgr, 3, 64, "conv1_1")
         self.conv1_2 = self.conv_layer(self.conv1_1, 64, 64, "conv1_2")
@@ -253,4 +287,4 @@ class VGG16OneFC(VGG16):
         self.conv5_3 = self.conv_layer(self.conv5_2, 512, 512, "conv5_3")
         self.pool5 = self.max_pool(self.conv5_3, 'pool5')
 
-        self.logits = self.fc_layer(self.pool5, 512, self.num_classes, 'logits')       
+        self.logits = self.fc_layer(self.pool5, self.fc_feat_size, self.num_classes, 'logits')

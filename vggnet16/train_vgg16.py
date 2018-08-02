@@ -8,7 +8,7 @@ from utils import rm_dir
 from vgg16_trainable import VGG16, VGG16OneFC
 from data_preprocess import load_data, prepare_dataset
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def check_accuracy(sess, dset, X, Y, correct_pred):
     num_correct, num_samples = 0, 0
@@ -27,15 +27,19 @@ def check_accuracy(sess, dset, X, Y, correct_pred):
 
 performance = {4096: 71.5, 3072: 69.30, 2048: 68.20}
 
-def build_model(X, Y, train_mode_ph, lr, global_step, **kwargs):
+def build_model(X, Y, train_mode_ph, lr, **kwargs):
     full = kwargs.get('full')
     fc_feat_size = kwargs.get('feat_size')
     vgg16_npy_path = kwargs.get('vgg16_npy_path', 'vgg16.npy')
+    global_step = kwargs.get('global_step', None)
+    image_size = kwargs.get('image_size')
+    # mean_image = kwargs.get('mean_image')
 
     # model = VGG16OneFC(vgg16_npy_path=vgg16_npy_path, num_classes=10)
     vgg = VGG16 if full else VGG16OneFC
-    model = vgg(vgg16_npy_path=vgg16_npy_path, num_classes=10, fc_feat_size=fc_feat_size)
-    model.build(X, train_mode=None)
+    model = vgg(vgg16_npy_path=vgg16_npy_path, num_classes=10, fc_feat_size=fc_feat_size, global_step=global_step)
+    model.build(X, image_size=image_size, train_mode=None)
+    global_step = model.global_step
     logits_op = model.logits
     loss_op = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=Y, logits=logits_op)
     loss_op = tf.reduce_mean(loss_op, name='loss')
@@ -56,8 +60,14 @@ def build_model(X, Y, train_mode_ph, lr, global_step, **kwargs):
     return model, logits_op, loss_op, acc_op, correct_pred, fc8_train_op, full_train_op
 
 def train(args):
+    if args.standard_config:
+        args.small = True
+        args.feat = 512
+        args.epoch1 = 5
+        args.epoch2 = 30
+
     images, labels = load_data(train=True)
-    train_dset, val_dset = prepare_dataset(images, labels, train=True, num_train=300)
+    train_dset, val_dset = prepare_dataset(images, labels, train=True, augment=args.augment)
 
     learning_rate = [1e-5]
 
@@ -72,21 +82,21 @@ def train(args):
         graph = tf.Graph()
 
         with graph.as_default():
-            global_step = tf.Variable(0, name='global_step', trainable=False)
-            # global_step = tf.get_variable('global_step', shape=[None], dtype=tf.int32, initializer=tf.constant_initializer(0), trainable=False)
-
             # input placeholder
             input_shape = (32, 32) if not args.augment else (24, 24)
             X = tf.placeholder(tf.float32, [None, *input_shape, 3], name='images_ph')
             Y = tf.placeholder(tf.int32, [None], name='labels_ph')
             train_mode_ph = tf.placeholder(tf.bool, name='train_mode_ph')
+            image_size = (24, 24) if args.augment else (32, 32)
             model, _, loss_op, acc_op, correct_pred, fc8_train_op, full_train_op = \
-                build_model(X, Y, train_mode_ph, lr, global_step, 
+                build_model(X, Y, train_mode_ph, lr, 
+                            image_size=image_size, #mean_image=mean_image,
                             feat_size=args.feat, vgg16_npy_path=vgg16_npy_path,
                             full=args.full)
+            global_step = model.global_step
             print('npy path: {}'.format(vgg16_npy_path))
 
-            middle_name = 'lr-{:.8f}-feat-{}'.format(lr, args.feat)
+            middle_name = 'feat-{}'.format(args.feat)
             # add variables to summary
             log_dir = os.path.join(args.log_dir, middle_name, '')
             if not args.eval:
@@ -129,10 +139,10 @@ def train(args):
                                                             train_mode_ph: True})
                             summary_writer.add_summary(summary, global_step.eval())
                         # saver.save(sess, save_dir, global_step=global_step)
-                    if args.epoch1 > 0: 
+                    if args.epoch1 > 0 and args.epoch2 == 0: 
                         model.save_npy(sess, npy_path=os.path.join(save_dir, 'vgg16-save-{}.npy'.format(int(time.time()))))
-                    acc, num_correct, num_samples = check_accuracy(sess, val_dset, X, Y, correct_pred)
-                    print('step:{}, val acc: {:.2%} ({}/{})'.format(global_step.eval (), acc, num_correct, num_samples))
+                        acc, num_correct, num_samples = check_accuracy(sess, val_dset, X, Y, correct_pred)
+                        print('step:{}, val acc: {:.2%} ({}/{})'.format(global_step.eval (), acc, num_correct, num_samples))
 
                     print('Finetune conv layers')
                     for e in range(args.epoch2):
@@ -143,19 +153,22 @@ def train(args):
                                                                     Y: y_batch,
                                                                     train_mode_ph: True})
                             summary_writer.add_summary(summary, global_step.eval())
-                    model.save_npy(sess, npy_path=os.path.join(save_dir, 'vgg16-save-{}.npy'.format(int(time.time()))))        
-                    acc, num_correct, num_samples = check_accuracy(sess, val_dset, X, Y, correct_pred)
-                    print('step: {}, val acc:{:.2%}, ({}/{})'.format(global_step.eval(), acc, num_correct, num_samples))
+                    if args.epoch2 > 0:
+                        model.save_npy(sess, npy_path=os.path.join(save_dir, 'vgg16-save-{}.npy'.format(int(time.time()))))        
+                        acc, num_correct, num_samples = check_accuracy(sess, val_dset, X, Y, correct_pred)
+                        print('step: {}, val acc:{:.2%}, ({}/{})'.format(global_step.eval(), acc, num_correct, num_samples))
                 else:
                     images, labels = load_data(False)
-                    test_dset = prepare_dataset(images, labels, train=False, augment=args.augment)
+                    test_dset = prepare_dataset(images, labels, train=False, 
+                                                mean=train_dset.mean, std=train_dset.std,
+                                                augment=args.augment)
                     acc, num_correct, num_samples = check_accuracy(sess, test_dset, X, Y, correct_pred)
                     print('step:{}, test acc: {:.2%} ({}/{})'.format(global_step.eval(), acc, num_correct, num_samples))
             # with end here
 
 def test(args):
     images, labels = load_data(train=False)
-    test_dset = prepare_dataset(images, labels, train=False)
+    test_dset = prepare_dataset(images, labels, train=False, augment=args.augment)
     vgg16_npy_path = args.model_dir
 
     # input placeholder
@@ -164,34 +177,21 @@ def test(args):
     Y = tf.placeholder(tf.int32, [None], name='labels_ph')
     vgg = VGG16 if args.full else VGG16OneFC
     model = vgg(vgg16_npy_path=vgg16_npy_path, num_classes=10, fc_feat_size=args.feat)
-    model.build(X, train_mode=None)
+    model.build(X, train_mode=None, image_size=input_shape)
     logits_op = model.logits
     correct_pred = tf.equal(tf.cast(tf.argmax(logits_op, axis=1), tf.int32), Y)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         acc, num_correct, num_samples = check_accuracy(sess, test_dset, X, Y, correct_pred)
+        print('step: ', sess.run(model.global_step))
         print('test acc: {:.2%} ({}/{})'.format(acc, num_correct, num_samples))
 
-def get_feature(args):
-    images, labels = load_data(train=True)
-    train_dset, val_dset = prepare_dataset(images, labels, train=True)
-    # images, labels = load_data(train=False)
-    # test_dset = prepare_dataset(images, labels, train=False)
-    vgg16_npy_path = args.model_dir
-
-    X = tf.placeholder(tf.float32, [None, 32, 32, 3], name='images_ph')
-    # Y = tf.placeholder(tf.int32, [None], name='labels_ph')
-    model = VGG16OneFC(vgg16_npy_path=vgg16_npy_path, num_classes=10, fc_feat_size=args.feat)
-    model.build(X)
-    feature_map = model.pool5
-    feature_map = tf.reshape(feature_map, [-1, 512])
-    logits_op = model.logits
-
+def compute_feature(dset, X, logits_op, feature_map, name):
     feats = {'feat':[], 'pred':[], 'gt': []}
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        for x_batch, y_batch in val_dset:
+        for x_batch, y_batch in dset:
             feature, logits = sess.run([feature_map, logits_op], feed_dict={X:x_batch})
             pred_y = np.argmax(logits, axis=1)
             # print(feature.shape)
@@ -203,7 +203,28 @@ def get_feature(args):
         feats['feat'] = to_list(feats['feat'])
         feats['pred'] = to_list(feats['pred'])
         feats['gt'] = to_list(feats['gt'])
-        np.save('feat_val.npy', feats)
+        np.save('feat_{}.npy'.format(name), feats)
+
+def get_feature(args):
+    images, labels = load_data(train=True)
+    train_dset, val_dset = prepare_dataset(images, labels, train=True)
+    # images, labels = load_data(train=False)
+    # test_dset = prepare_dataset(images, labels, train=False)
+    vgg16_npy_path = args.model_dir
+
+    X = tf.placeholder(tf.float32, [None, 32, 32, 3], name='images_ph')
+    # Y = tf.placeholder(tf.int32, [None], name='labels_ph')
+    model = VGG16OneFC(vgg16_npy_path=vgg16_npy_path, num_classes=10, fc_feat_size=args.feat)
+    model.build(X, image_size=args.image_size)
+    feature_map = model.pool5
+    feature_map = tf.reshape(feature_map, [-1, 512])
+    logits_op = model.logits
+
+    compute_feature(train_dset, X, logits_op, feature_map, 'train')
+    compute_feature(val_dset, X, logits_op, feature_map, 'val')
+    images, labels = load_data(train=False)
+    test_dset = prepare_dataset(images, labels, train=False)
+    compute_feature(test_dset, X, logits_op, feature_map, 'test')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Train AlexNet on CIFAR-10')
@@ -216,18 +237,22 @@ if __name__ == '__main__':
     parser.add_argument('--augment', dest='augment', action='store_true')
     parser.add_argument('--resume', dest='resume', action='store_true')
     parser.add_argument('--eval', dest='eval', action='store_true')
-    parser.add_argument('--resize', dest='resize', action='store_true')
     parser.add_argument('--init', type=str, default='he')
     parser.add_argument('--feat', type=int, default=4096)
     parser.add_argument('--model-dir')
     parser.add_argument('--full', dest='full', action='store_true')
     parser.add_argument('--small', dest='full', action='store_false')
-    parser.set_defaults(resume=False, augment=False, eval=False, resize=False)
+    parser.add_argument('--compute-feature', dest='compute_feature', action='store_true')
+    parser.add_argument('--standard', dest='standard_config', action='store_true')
+    parser.set_defaults(resume=False, augment=False, eval=False,
+                        compute_feature=False, standard_config=False)
     args = parser.parse_args()
     print(args)
 
-    if not args.eval:
-        train(args)
+    if args.compute_feature:
+        get_feature(args)
     else:
-        test(args)
-    # get_feature(args)
+        if not args.eval:
+            train(args)
+        else:
+            test(args)
